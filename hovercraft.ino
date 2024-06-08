@@ -1,109 +1,76 @@
-/*
-         Arduino based RC Hovercraft
-   == Receiver Code - ESC and Servo Control =
-  by Dejan, www.HowToMechatronics.com
-  Library: TMRh20/RF24, https://github.com/tmrh20/RF24/
-*/
-#include <SPI.h>
-#include <nRF24L01.h>
-#include <RF24.h>
-#include <Servo.h>
+#include <BluetoothSerial.h>
+#include <DabbleESP32.h>
+#include <ESP32Servo.h>
 
-#define led 10
+#define LED_PIN 10
 
-RF24 radio(8, 9);   // nRF24L01 (CE, CSN)
-const byte address[6] = "00001";
-unsigned long lastReceiveTime = 0;
-unsigned long currentTime = 0;
+BluetoothSerial SerialBT;
 
 Servo esc1;  // create servo object to control the ESC
 Servo esc2;
 Servo servo1;
 
 int esc1Value, esc2Value, servo1Value;
-// Max size of this struct is 32 bytes - NRF24L01 buffer limit
-struct Data_Package {
-  byte j1PotX;
-  byte j1PotY;
-  byte j1Button;
-  byte j2PotX;
-  byte j2PotY;
-  byte j2Button;
-  byte pot1;
-  byte pot2;
-  byte tSwitch1;
-  byte tSwitch2;
-  byte button1;
-  byte button2;
-  byte button3;
-  byte button4;
-};
-Data_Package data; //Create a variable with the above structure
+
 void setup() {
-  Serial.begin(9600);
-  radio.begin();
-  radio.openReadingPipe(0, address);
-  radio.setAutoAck(false);
-  radio.setDataRate(RF24_250KBPS);
-  radio.setPALevel(RF24_PA_LOW);
-  radio.startListening(); //  Set the module as receiver
-  resetData();
+  Serial.begin(115200); // Use a higher baud rate for ESP32
+  SerialBT.begin("ESP32Hovercraft"); // Bluetooth device name
+  Dabble.begin(SerialBT);
+  
   esc1.attach(7);
   esc2.attach(6);
   servo1.attach(5);
-  pinMode(led, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  // ESC Calibration
+  calibrateESC(esc1);
+  calibrateESC(esc2);
 }
+
 void loop() {
-  // Check whether we keep receving data, or we have a connection between the two modules
-  currentTime = millis();
-  if ( currentTime - lastReceiveTime > 1000 ) { // If current time is more then 1 second since we have recived the last data, that means we have lost connection
-    resetData(); // If connection is lost, reset the data. It prevents unwanted behavior, for example if a drone jas a throttle up, if we lose connection it can keep flying away if we dont reset the function
-  }
-  // Check whether there is data to be received
-  if (radio.available()) {
-    radio.read(&data, sizeof(Data_Package)); // Read the whole data and store it into the 'data' structure
-    lastReceiveTime = millis(); // At this moment we have received the data
-  }
+  Dabble.processInput(); // Process data from Dabble app
+
   // Controlling servos
-  servo1Value = map(data.j2PotX, 0, 255, 0, 50);
+  int j2PotX = GamePad.getJoystickValue(1, 1); // Get Joystick 2 X value
+  servo1Value = map(j2PotX, -512, 512, 0, 50);
   servo1.write(servo1Value);
 
   // Controlling brushless motor with ESC
   // Lift propeller
-  esc1Value = map(data.pot1, 0, 255, 1000, 2000); // Map the receiving value form 0 to 255 to 0 1000 to 2000, values used for controlling ESCs
-  esc1.writeMicroseconds(esc1Value); // Send the PWM control singal to the ESC
-  
+  int pot1 = GamePad.getSliderValue(1); // Get Slider 1 value
+  esc1Value = map(pot1, 0, 255, 1000, 2000); // Map the receiving value from 0 to 255 to 1000 to 2000, values used for controlling ESCs
+  esc1.writeMicroseconds(esc1Value); // Send the PWM control signal to the ESC
+
   // Thrust propeller
-  esc2Value = constrain(data.j1PotY, 130, 255); // Joysticks stays in middle. So we only need values the upper values from 130 to 255
-  esc2Value = map(esc2Value, 130, 255, 1000, 2000);
+  int j1PotY = GamePad.getJoystickValue(1, 2); // Get Joystick 1 Y value
+  esc2Value = constrain(j1PotY, -512, 512); // Joysticks stay in the middle. So we only need the upper values from 130 to 255
+  esc2Value = map(esc2Value, -512, 512, 1000, 2000);
   esc2.writeMicroseconds(esc2Value);
 
   // Monitor the battery voltage
   int sensorValue = analogRead(A0);
-  float voltage = sensorValue * (5.00 / 1023.00) * 3; // Convert the reading values from 5v to suitable 12V i
+  float voltage = sensorValue * (3.3 / 4095.0) * 3; // Convert the reading values from 3.3v to suitable 12V, adjust if necessary for your voltage divider
   Serial.println(voltage);
-  // If voltage is below 11V turn on the LED
+  // If voltage is below 11V, turn on the LED
   if (voltage < 11) {
-    digitalWrite(led, HIGH);
+    digitalWrite(LED_PIN, HIGH);
   }
   else {
-    digitalWrite(led, LOW);
+    digitalWrite(LED_PIN, LOW);
   }
 }
+
+void calibrateESC(Servo& esc) {
+  // Send maximum signal to ESC
+  esc.writeMicroseconds(2000);
+  delay(2000); // wait for 2 seconds
+
+  // Send minimum signal to ESC
+  esc.writeMicroseconds(1000);
+  delay(2000); // wait for 2 seconds
+}
+
 void resetData() {
   // Reset the values when there is no radio connection - Set initial default values
-  data.j1PotX = 127;
-  data.j1PotY = 127;
-  data.j2PotX = 127;
-  data.j2PotY = 127;
-  data.j1Button = 1;
-  data.j2Button = 1;
-  data.pot1 = 1;
-  data.pot2 = 1;
-  data.tSwitch1 = 1;
-  data.tSwitch2 = 1;
-  data.button1 = 1;
-  data.button2 = 1;
-  data.button3 = 1;
-  data.button4 = 1;
+  // No need for resetData function in this case since Dabble will handle reconnections automatically
 }
