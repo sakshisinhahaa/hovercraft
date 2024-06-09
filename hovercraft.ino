@@ -1,76 +1,111 @@
-#include <BluetoothSerial.h>
-#include <DabbleESP32.h>
 #include <ESP32Servo.h>
+#include "BluetoothSerial.h"
 
-#define LED_PIN 10
+// const char *pin = "1234"; 
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run make menuconfig to and enable it
+#endif
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
+#endif
 
 BluetoothSerial SerialBT;
 
-Servo esc1;  // create servo object to control the ESC
-Servo esc2;
-Servo servo1;
+Servo esc1;  // Create servo object to control the ESC for thrust
+Servo esc2;  // Create servo object to control the ESC for lift
+Servo servo1; // Create servo object to control the servo motor
 
-int esc1Value, esc2Value, servo1Value;
+int esc1Value, esc2Value, servo1Value = 90; // Variables to store the PWM values for ESC1, ESC2, and servo
+
+bool moveServoLeft = false;
+bool moveServoRight = false;
+unsigned long lastServoMoveTime = 0;
 
 void setup() {
-  Serial.begin(115200); // Use a higher baud rate for ESP32
-  SerialBT.begin("ESP32Hovercraft"); // Bluetooth device name
-  Dabble.begin(SerialBT);
-  
-  esc1.attach(7);
-  esc2.attach(6);
-  servo1.attach(5);
-  pinMode(LED_PIN, OUTPUT);
+    Serial.begin(115200); // Initialize serial communication at 115200 baud rate for debugging
+    if (!SerialBT.begin("ESP32Hovercraft")) {  // Initialize Bluetooth with the name "ESP32Hovercraft"
+        Serial.println("An error occurred initializing Bluetooth");
+    } else {
+        Serial.println("Bluetooth initialized successfully");
+    }
 
-  // ESC Calibration
-  calibrateESC(esc1);
-  calibrateESC(esc2);
+    esc1.attach(7); // Attach ESC1 to pin 7
+    esc2.attach(6); // Attach ESC2 to pin 6
+    servo1.attach(5); // Attach servo1 to pin 5
+
+    // Set initial servo position to 90 degrees (middle)
+    servo1.write(servo1Value);
 }
 
 void loop() {
-  Dabble.processInput(); // Process data from Dabble app
+    if (SerialBT.available()) { // Check if there is any data available from Bluetooth
+        handleBluetoothCommand(); // Handle the received Bluetooth command
+    }
 
-  // Controlling servos
-  int j2PotX = GamePad.getJoystickValue(1, 1); // Get Joystick 2 X value
-  servo1Value = map(j2PotX, -512, 512, 0, 50);
-  servo1.write(servo1Value);
+    // Handle servo movement
+    if (moveServoLeft && millis() - lastServoMoveTime > 250) {
+        servo1Value = max(servo1Value - 5, 45); // Decrease the value by 5 degrees, not going below 45
+        Serial.println(servo1Value);
+        servo1.write(servo1Value); // Send the new position to the servo
+        lastServoMoveTime = millis(); // Update the timestamp of the last movement
+    }
+    if (moveServoRight && millis() - lastServoMoveTime > 250) {
+        servo1Value = min(servo1Value + 5, 135); // Increase the value by 5 degrees, not exceeding 135
+        Serial.println(servo1Value);
+        servo1.write(servo1Value); // Send the new position to the servo
+        lastServoMoveTime = millis(); // Update the timestamp of the last movement
+    }
+    if (!moveServoRight && !moveServoLeft && servo1Value!=90 && millis() - lastServoMoveTime > 333){
+        if (servo1Value > 90){
+            servo1Value = max(servo1Value - 5, 90);
+        } else {
+            servo1Value = min(servo1Value + 5, 90);
+        }
+        servo1.write(servo1Value); // Send the new position to the servo
+        Serial.println(servo1Value);
+        lastServoMoveTime = millis(); // Update the timestamp of the last movement
 
-  // Controlling brushless motor with ESC
-  // Lift propeller
-  int pot1 = GamePad.getSliderValue(1); // Get Slider 1 value
-  esc1Value = map(pot1, 0, 255, 1000, 2000); // Map the receiving value from 0 to 255 to 1000 to 2000, values used for controlling ESCs
-  esc1.writeMicroseconds(esc1Value); // Send the PWM control signal to the ESC
+    }
+}
 
-  // Thrust propeller
-  int j1PotY = GamePad.getJoystickValue(1, 2); // Get Joystick 1 Y value
-  esc2Value = constrain(j1PotY, -512, 512); // Joysticks stay in the middle. So we only need the upper values from 130 to 255
-  esc2Value = map(esc2Value, -512, 512, 1000, 2000);
-  esc2.writeMicroseconds(esc2Value);
+void handleBluetoothCommand() {
+    String inputString = SerialBT.readStringUntil('\n'); // Read the incoming command until newline character
+    Serial.println(inputString);
 
-  // Monitor the battery voltage
-  int sensorValue = analogRead(A0);
-  float voltage = sensorValue * (3.3 / 4095.0) * 3; // Convert the reading values from 3.3v to suitable 12V, adjust if necessary for your voltage divider
-  Serial.println(voltage);
-  // If voltage is below 11V, turn on the LED
-  if (voltage < 11) {
-    digitalWrite(LED_PIN, HIGH);
-  }
-  else {
-    digitalWrite(LED_PIN, LOW);
-  }
+    // THRUST
+    if (inputString.startsWith("J")) { // If the command is for ESC1
+        esc1Value = inputString.substring(1).toInt(); // Extract the value from the command and convert it to integer
+        esc1Value = map(esc1Value, 0, 180, 1000, 2000); // Map the value from 0-180 to 1000-2000 (ESC range)
+        esc1.writeMicroseconds(esc1Value); // Send the PWM control signal to the ESC
+
+    // LIFT
+    } else if (inputString.startsWith("K")) { // If the command is for the joystick (ESC2)
+        esc2Value = inputString.substring(1).toInt(); // Extract the value from the command and convert it to integer
+        esc2Value = map(esc2Value, 0, 180, 1000, 2000); // Map the value from 0-180 to 1000-2000 (ESC range)
+        esc2.writeMicroseconds(esc2Value); // Send the PWM control signal to the ESC
+    }
+
+    // Servo control
+    else if (inputString.startsWith("L")) { // If the command is for the servo (left)
+        moveServoLeft = true; // Start moving the servo to the left
+        moveServoRight = false; // Stop moving the servo to the right
+    } else if (inputString.startsWith("R")) { // If the command is for the servo (right)
+        moveServoRight = true; // Start moving the servo to the right
+        moveServoLeft = false; // Stop moving the servo to the left
+    } else if (inputString.startsWith("S")) { // If the command is for the servo (stationary)
+        moveServoLeft = false; // Stop moving the servo to the left
+        moveServoRight = false; // Stop moving the servo to the right
+    }
+
+    Serial.println(servo1Value);
 }
 
 void calibrateESC(Servo& esc) {
-  // Send maximum signal to ESC
-  esc.writeMicroseconds(2000);
-  delay(2000); // wait for 2 seconds
+    // Send maximum signal to ESC
+    esc.writeMicroseconds(2000);
+    delay(2000); // Wait for 2 seconds
 
-  // Send minimum signal to ESC
-  esc.writeMicroseconds(1000);
-  delay(2000); // wait for 2 seconds
-}
-
-void resetData() {
-  // Reset the values when there is no radio connection - Set initial default values
-  // No need for resetData function in this case since Dabble will handle reconnections automatically
+    // Send minimum signal to ESC
+    esc.writeMicroseconds(1000);
+    delay(2000); // Wait for 2 seconds
 }
